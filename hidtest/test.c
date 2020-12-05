@@ -27,19 +27,73 @@
 	#include <unistd.h>
 #endif
 
+float acc_cal(unsigned char l, unsigned char h){
+	return (float) ((int16_t) ((h<<8) + l))/32768 * 16 * 9.8; 
+}
+
+float angv_cal(unsigned char l, unsigned char h){
+	return (float) ((int16_t) ((h<<8) + l))/32768 * 2000; 
+}
+
+float ang_cal(unsigned char l, unsigned char h){
+	return (float) ((int16_t) ((h<<8) + l))/32768 * 180; 
+}
+
+int16_t mag_cal(unsigned char l, unsigned char h){
+	return (int16_t) ((h<<8) + l); 
+}
+
+void packet_parsing(unsigned char* packet){
+	unsigned char sensor_date[8];
+	unsigned char sensor_data[24];
+	unsigned char i;
+	memcpy(sensor_date, &packet[2], 8);
+	printf("20%02d-%02d-%02d %02d:%02d:%02d.%03d \n",
+			sensor_date[0], sensor_date[1], sensor_date[2], sensor_date[3],
+			sensor_date[4], sensor_date[5], (int)(sensor_date[7]<<8) + sensor_date[6]);
+	for(i = 0; i < 6; i++){
+		if(packet[i * 25 + 10] == i + 0x50){
+			printf("    sensor%d \n", i);
+			memcpy(sensor_data, &packet[i * 25 + 10 + 1], 24);
+			printf("        acc  x:%f, y:%f, z:%f \n",  acc_cal(sensor_data[0],sensor_data[1]),
+														acc_cal(sensor_data[2],sensor_data[3]),
+														acc_cal(sensor_data[4],sensor_data[5]));
+			printf("        agv  x:%f, y:%f, z:%f \n",  angv_cal(sensor_data[0+6],sensor_data[1+6]),
+														angv_cal(sensor_data[2+6],sensor_data[3+6]),
+														angv_cal(sensor_data[4+6],sensor_data[5+6]));
+			printf("        ang  x:%f, y:%f, z:%f \n",  ang_cal(sensor_data[0+12],sensor_data[1+12]),
+														ang_cal(sensor_data[2+12],sensor_data[3+12]),
+														ang_cal(sensor_data[4+12],sensor_data[5+12]));
+			printf("        mag  x:%d, y:%d, z:%d \n",  mag_cal(sensor_data[0+18],sensor_data[1+18]),
+														mag_cal(sensor_data[2+18],sensor_data[3+18]),
+														mag_cal(sensor_data[4+18],sensor_data[5+18]));
+		}
+	}
+
+}
+
 int main(int argc, char* argv[])
 {
 	(void)argc;
 	(void)argv;
 
 	int res;
-	unsigned char buf[256];
-	#define MAX_STR 255
+	unsigned char buf[64];
+	unsigned char data[1984];
+	unsigned char packet[161];
+	unsigned char sum;
+	int offset;
+	#define MAX_STR 64
 	wchar_t wstr[MAX_STR];
 	hid_device *handle;
 	int i;
+	int j;
 
-	struct hid_device_info *devs, *cur_dev;
+	int count;
+	int err_cnt;
+	int err;
+
+	// struct hid_device_info *devs, *cur_dev;
 
 	printf("hidapi test/example tool. Compiled with hidapi version %s, runtime version %s.\n", HID_API_VERSION_STR, hid_version_str());
 	if (hid_version()->major == HID_API_VERSION_MAJOR && hid_version()->minor == HID_API_VERSION_MINOR && hid_version()->patch == HID_API_VERSION_PATCH) {
@@ -52,21 +106,6 @@ int main(int argc, char* argv[])
 	if (hid_init())
 		return -1;
 
-	devs = hid_enumerate(0x0, 0x0);
-	cur_dev = devs;
-	while (cur_dev) {
-		printf("Device Found\n  type: %04hx %04hx\n  path: %s\n  serial_number: %ls", cur_dev->vendor_id, cur_dev->product_id, cur_dev->path, cur_dev->serial_number);
-		printf("\n");
-		printf("  Manufacturer: %ls\n", cur_dev->manufacturer_string);
-		printf("  Product:      %ls\n", cur_dev->product_string);
-		printf("  Release:      %hx\n", cur_dev->release_number);
-		printf("  Interface:    %d\n",  cur_dev->interface_number);
-		printf("  Usage (page): 0x%hx (0x%hx)\n", cur_dev->usage, cur_dev->usage_page);
-		printf("\n");
-		cur_dev = cur_dev->next;
-	}
-	hid_free_enumeration(devs);
-
 	// Set up the command buffer.
 	memset(buf,0x00,sizeof(buf));
 	buf[0] = 0x01;
@@ -76,7 +115,7 @@ int main(int argc, char* argv[])
 	// Open the device using the VID, PID,
 	// and optionally the Serial number.
 	////handle = hid_open(0x4d8, 0x3f, L"12345");
-	handle = hid_open(0x4d8, 0x3f, NULL);
+	handle = hid_open(0x1920, 0x0100, NULL);
 	if (!handle) {
 		printf("unable to open device\n");
  		return 1;
@@ -118,76 +157,67 @@ int main(int argc, char* argv[])
 	// data here, but execution should not block.
 	res = hid_read(handle, buf, 17);
 
-	// Send a Feature Report to the device
-	buf[0] = 0x2;
-	buf[1] = 0xa0;
-	buf[2] = 0x0a;
-	buf[3] = 0x00;
-	buf[4] = 0x00;
-	res = hid_send_feature_report(handle, buf, 17);
-	if (res < 0) {
-		printf("Unable to send a feature report.\n");
-	}
 
 	memset(buf,0,sizeof(buf));
-
-	// Read a Feature Report from the device
-	buf[0] = 0x2;
-	res = hid_get_feature_report(handle, buf, sizeof(buf));
-	if (res < 0) {
-		printf("Unable to get a feature report.\n");
-		printf("%ls", hid_error(handle));
-	}
-	else {
-		// Print out the returned buffer.
-		printf("Feature Report\n   ");
-		for (i = 0; i < res; i++)
-			printf("%02hhx ", buf[i]);
-		printf("\n");
-	}
-
-	memset(buf,0,sizeof(buf));
-
-	// Toggle LED (cmd 0x80). The first byte is the report number (0x1).
-	buf[0] = 0x1;
-	buf[1] = 0x80;
-	res = hid_write(handle, buf, 17);
-	if (res < 0) {
-		printf("Unable to write()\n");
-		printf("Error: %ls\n", hid_error(handle));
-	}
-
-
-	// Request state (cmd 0x81). The first byte is the report number (0x1).
-	buf[0] = 0x1;
-	buf[1] = 0x81;
-	hid_write(handle, buf, 17);
-	if (res < 0)
-		printf("Unable to write() (2)\n");
 
 	// Read requested state. hid_read() has been set to be
 	// non-blocking by the call to hid_set_nonblocking() above.
 	// This loop demonstrates the non-blocking nature of hid_read().
-	res = 0;
-	while (res == 0) {
-		res = hid_read(handle, buf, sizeof(buf));
-		if (res == 0)
-			printf("waiting...\n");
-		if (res < 0)
-			printf("Unable to read()\n");
-		#ifdef WIN32
-		Sleep(500);
-		#else
-		usleep(500*1000);
-		#endif
+	count = 0;
+	err_cnt = 0;
+	while(1){
+		count++;
+		err =1;
+		res = 0;
+		offset = 0;
+		memset(data,0,sizeof(data));
+		memset(packet,0,sizeof(packet));
+		for (i = 0; i < 32; i++)
+		{
+			res = hid_read(handle, buf, 64);
+			if (res == 64){
+				memcpy(&data[offset*62], &buf[2], 62);
+				offset ++;
+			}
+			if(res == 0){
+				continue;
+			}
+			if(res < 0 ){
+				break;
+			}
+		}
+		for (i = 0; i < sizeof(data); i++){
+			if(data[i] == 0x55 && data[i+1] == 0x80 && i < sizeof(data) - 160){
+				sum = 0;
+				for(j = 0; j< 160; j++)
+					sum += data[j+i];
+				if(sum == data[i+160]){
+					memcpy(packet,&data[i],161);
+					err = 0;
+					// printf("Data read: (recv:%d err:%d ratio:%2.1f%%)\n   ",count, err_cnt, (float)err_cnt/count*100);
+					// packet_parsing(packet);
+					// printf("\n");
+					break;
+				}
+			}
+		}
+		if(err == 0){
+			printf("Data read: (recv:%d err:%d ratio:%2.1f%%)\n   ",count, err_cnt, (float)err_cnt/count*100);
+			//Print out the returned buffer.
+			// for (i = 0; i < sizeof(packet); i++)
+			// 	printf("%02hhx ", packet[i]);
+			
+			packet_parsing(packet);
+			printf("\n");
+		}else{
+			err_cnt ++;
+			// for (i = 0; i < sizeof(data); i++)
+			// 	printf("%02hhx ", data[i]);
+			usleep(10*1000);
+		}
+		
+		usleep(100*1000);
 	}
-
-	printf("Data read:\n   ");
-	// Print out the returned buffer.
-	for (i = 0; i < res; i++)
-		printf("%02hhx ", buf[i]);
-	printf("\n");
-
 	hid_close(handle);
 
 	/* Free static HIDAPI objects. */
